@@ -1,0 +1,40 @@
+# Ambiente
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Airflow
+logs/
+airflow.cfg
+airflow.db
+standalone_admin_password.txt
+
+# Docker
+volumes/
+
+# Data Lake local
+data_lake/
+*.parquet
+
+# Exports gerados pelo pipeline
+scripts/exports/*.csv
+
+# Dashboard — dados locais
+dashboard/data/*.csv
+
+# Kaggle
+kaggle.json
+~/.kaggle/
+
+# OS
+.DS_Store
+Thumbs.db
