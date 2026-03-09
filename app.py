@@ -235,7 +235,7 @@ def apply_theme(fig, height=420):
 # ─────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 
 @st.cache_data
 def load_data():
