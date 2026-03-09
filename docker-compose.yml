@@ -32,7 +32,6 @@ x-airflow-common: &airflow-common
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./logs:/opt/airflow/logs
-    - ./config/airflow.cfg:/opt/airflow/airflow.cfg
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
@@ -176,10 +175,12 @@ services:
     working_dir: /app
     volumes:
       - ./dashboard:/app
+      - ./scripts/exports:/app/data  # ← CSVs gerados pelo pipeline alimentam o dashboard
     ports:
       - "8501:8501"
     environment:
       OLIST_DW_CONN: postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw
+      DATA_DIR: /app/data
     command: >
       bash -c "pip install streamlit plotly pandas sqlalchemy psycopg2-binary -q &&
                streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
