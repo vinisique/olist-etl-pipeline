@@ -101,6 +101,12 @@ Pass:  admin
 ```
 Na interface do Airflow, ative e dispare a DAG `olist_etl_pipeline`.
 
+O pipeline executa 4 tasks em sequência:
+```
+ingestao → processamento → carga → analise
+```
+Ao concluir, os CSVs analíticos são salvos em `scripts/exports/` e o Streamlit os lê automaticamente via volume compartilhado.
+
 ### 4. Acesse o dashboard
 Após o pipeline concluir:
 ```
@@ -132,6 +138,12 @@ notebooks/05_analysis.ipynb      → Gera os CSVs analíticos
 ```
 
 > O dataset é baixado automaticamente via `kagglehub` na primeira execução.
+
+**Para rodar o Streamlit localmente** (fora do Docker), copie os CSVs gerados pelo notebook `05_analysis.ipynb` para `dashboard/data/` e certifique-se de que o `app.py` lê o caminho via variável de ambiente:
+
+```python
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+```
 
 ---
 
@@ -221,13 +233,15 @@ Queries analíticas no Data Warehouse e exportação de 5 CSVs para consumo no d
 ```
 olist-etl-pipeline/
 ├── docker-compose.yml          ← Sobe Airflow + LocalStack + PostgreSQL + Streamlit
-├── .env                        ← Variáveis de ambiente
+├── .env                        ← Variáveis de ambiente (não commitado)
+├── .gitignore
 ├── dags/
 │   └── olist_etl_pipeline.py  ← DAG principal (4 tasks encadeadas)
 ├── scripts/
-│   ├── init_s3.sh             ← Cria bucket no LocalStack
-│   ├── init_dw.sql            ← Inicializa o Data Warehouse
-│   └── exports/               ← CSVs gerados pelo pipeline
+│   ├── init_s3.sh             ← Cria bucket no LocalStack ao iniciar
+│   ├── init_dw.sql            ← Inicializa o schema do Data Warehouse
+│   └── exports/               ← CSVs gerados pelo pipeline → lidos pelo Streamlit
+│       └── .gitkeep
 ├── notebooks/
 │   ├── 01_exploratory.ipynb
 │   ├── 02_ingestion.ipynb
@@ -236,9 +250,13 @@ olist-etl-pipeline/
 │   └── 05_analysis.ipynb
 ├── dashboard/
 │   ├── app.py                 ← Dashboard Streamlit
-│   └── data/                  ← CSVs para desenvolvimento local
+│   └── data/                  ← CSVs para desenvolvimento local (fora do Docker)
+│       └── .gitkeep
 └── README.md
 ```
+
+> **Como o pipeline alimenta o dashboard:**
+> A task `analise` salva os CSVs em `scripts/exports/`. O Docker Compose monta essa pasta como `/app/data/` no container do Streamlit — sem nenhuma intervenção manual.
 
 ---
 
