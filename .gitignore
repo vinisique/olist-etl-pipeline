@@ -29,7 +29,6 @@ data_lake/
 scripts/exports/*.csv
 
 # Dashboard — dados locais
-dashboard/data/*.csv
 
 # Kaggle
 kaggle.json
