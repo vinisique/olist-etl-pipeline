@@ -381,7 +381,7 @@ if page == "Visão Geral":
         ))
         fig.update_layout(
             yaxis2=dict(overlaying="y", side="right",
-                        gridcolor="transparent", showgrid=False),
+                        gridcolor="rgba(0,0,0,0)", showgrid=False),
             hovermode="x unified"
         )
         apply_theme(fig, height=380)
