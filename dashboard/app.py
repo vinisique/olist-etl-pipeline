@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import re
-import glob
 from collections import Counter
 
 # ─────────────────────────────────────────────
@@ -257,35 +256,13 @@ def load_data():
     return receita, categorias, estados, entrega, vendedores
 
 @st.cache_data
-def load_reviews():
-    path = os.path.join(DATA_DIR, "reviews_sample.csv")
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    raise FileNotFoundError("reviews_sample.csv não encontrado em dashboard/data/")
-
-@st.cache_resource
-def load_nlp_model():
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-
-@st.cache_data
-def compute_embeddings(_texts_tuple):
-    # BUG FIX: tuple é hashável — evita cache miss a cada render
-    model = load_nlp_model()
-    return model.encode(list(_texts_tuple), batch_size=128, show_progress_bar=False, convert_to_numpy=True)
-
-@st.cache_data
-def compute_umap(_key, embeddings):
-    import umap as umap_lib
-    reducer = umap_lib.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, metric="cosine", random_state=42)
-    return reducer.fit_transform(embeddings)
-
-def get_embeddings_and_coords(df):
-    # BUG FIX: função centralizada — embeddings disponíveis em qualquer aba sem depender de tab1
-    texts_tuple = tuple(df["review_text"].tolist())
-    embeddings  = compute_embeddings(texts_tuple)
-    coords      = compute_umap(hash(texts_tuple[:20]), embeddings)
-    return embeddings, coords
+def load_umap_data():
+    path = os.path.join(DATA_DIR, "reviews_umap.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError("reviews_umap.csv não encontrado em scripts/exports/")
+    df = pd.read_csv(path)
+    df["texto_curto"] = df["review_text"].str[:90] + "..."
+    return df
 
 receita, categorias, estados, entrega, vendedores = load_data()
 
@@ -635,113 +612,109 @@ elif page == "Embeddings & NLP":
     st.markdown("""<div class="page-header">
         <div class="page-eyebrow">🧠 NLP · Semântica</div>
         <h1 class="page-title">Embeddings &<br>Análise Semântica</h1>
-        <p class="page-desc">Representação vetorial de reviews com sentence-transformers e visualização UMAP</p>
+        <p class="page-desc">Representação vetorial de reviews com sentence-transformers + PyTorch, redução dimensional com UMAP</p>
         <div class="badge-row">
             <span class="tech-badge">sentence-transformers</span>
             <span class="tech-badge">paraphrase-multilingual-MiniLM-L12-v2</span>
+            <span class="tech-badge">PyTorch · GPU Colab</span>
             <span class="tech-badge">UMAP · 384D→2D</span>
             <span class="tech-badge">cosine similarity</span>
-            <span class="tech-badge">sklearn</span>
         </div>
     </div>""", unsafe_allow_html=True)
 
     try:
-        df = load_reviews()
-    except Exception as e:
+        df = load_umap_data()
+    except FileNotFoundError as e:
         st.error(f"❌ {e}")
         st.stop()
 
-    df["sentimento"]  = df["review_score"].map(SENTIMENT_MAP)
-    df["texto_curto"] = df["review_text"].str[:90] + "..."
+    pct_pos = (df["review_score"] >= 4).mean() * 100
+    pct_neg = (df["review_score"] <= 2).mean() * 100
 
-    pct_pos = (df["review_score"]>=4).mean()*100
-    pct_neg = (df["review_score"]<=2).mean()*100
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: st.markdown(kpi("Reviews Analisados",f"{len(df):,}".replace(",",".")), unsafe_allow_html=True)
-    with c2: st.markdown(kpi("Dimensão do Vetor","384D","MiniLM-L12-v2"), unsafe_allow_html=True)
-    with c3: st.markdown(kpi("Reviews Positivos",f"{pct_pos:.1f}%","nota ≥ 4"), unsafe_allow_html=True)
-    with c4: st.markdown(kpi("Reviews Negativos",f"{pct_neg:.1f}%","nota ≤ 2",neg=True), unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.markdown(kpi("Reviews Analisados", f"{len(df):,}".replace(",", ".")), unsafe_allow_html=True)
+    with c2: st.markdown(kpi("Dimensão do Vetor", "384D", "MiniLM-L12-v2"), unsafe_allow_html=True)
+    with c3: st.markdown(kpi("Reviews Positivos", f"{pct_pos:.1f}%", "nota ≥ 4"), unsafe_allow_html=True)
+    with c4: st.markdown(kpi("Reviews Negativos", f"{pct_neg:.1f}%", "nota ≤ 2", neg=True), unsafe_allow_html=True)
 
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-    # BUG FIX: carregar embeddings uma vez via session_state — disponível em todas as abas
-    if "nlp_embeddings" not in st.session_state:
-        with st.spinner("⚙️ Carregando modelo e computando embeddings… (primeira vez ~30s)"):
-            try:
-                emb, coords = get_embeddings_and_coords(df)
-                st.session_state["nlp_embeddings"] = emb
-                st.session_state["nlp_coords"]     = coords
-            except ImportError:
-                st.error("Instale: `pip install sentence-transformers umap-learn scikit-learn`")
-                st.stop()
+    tab1, tab2, tab3 = st.tabs(["🗺️  Mapa Semântico UMAP", "🔍  Busca por Similaridade", "📊  Análise de Sentimento"])
 
-    embeddings = st.session_state["nlp_embeddings"]
-    coords     = st.session_state["nlp_coords"]
-    df["x"]    = coords[:,0]
-    df["y"]    = coords[:,1]
-
-    tab1, tab2, tab3 = st.tabs(["🗺️  Mapa Semântico UMAP","🔍  Busca por Similaridade","📊  Análise de Sentimento"])
-
-    # ── TAB 1: UMAP ──
+    # ── TAB 1: UMAP ──────────────────────────────────────────────
     with tab1:
         st.markdown("""<div class="insight-box">
-            <strong>Como ler este mapa:</strong> Cada ponto é um review vetorizado em <strong>384 dimensões</strong>.
+            <strong>Como ler este mapa:</strong> Cada ponto é um review vetorizado em <strong>384 dimensões</strong>
+            pelo modelo <strong>sentence-transformers + PyTorch</strong> (GPU Colab T4).
             O UMAP comprime para 2D preservando vizinhança semântica — textos similares ficam agrupados.
-            Clusters por cor revelam padrões linguísticos reais nos dados.
         </div>""", unsafe_allow_html=True)
 
-        col_ctrl, col_info = st.columns([1,3])
+        col_ctrl, col_info = st.columns([1, 3])
         with col_ctrl:
-            filtro_sent = st.multiselect("Sentimentos", options=list(SENTIMENT_MAP.values()), default=list(SENTIMENT_MAP.values()))
-            sample_size = st.slider("Pontos no gráfico",500,len(df),min(2000,len(df)),step=250)
+            filtro_sent = st.multiselect(
+                "Sentimentos",
+                options=list(SENTIMENT_MAP.values()),
+                default=list(SENTIMENT_MAP.values())
+            )
+            sample_size = st.slider("Pontos no gráfico", 500, len(df), min(2000, len(df)), step=250)
 
-        total_shown = min(sample_size, len(df[df["sentimento"].isin(filtro_sent)]))
+        df_filtered = df[df["sentimento"].isin(filtro_sent)]
+        total_shown = min(sample_size, len(df_filtered))
+
         with col_info:
             st.markdown(f"""<div style="display:flex;flex-wrap:wrap;align-items:center;padding:16px 0;">
                 <div class="stat-pill">Modelo <span>MiniLM-L12-v2</span></div>
-                <div class="stat-pill">Shape <span>{embeddings.shape[0]:,} × {embeddings.shape[1]}</span></div>
+                <div class="stat-pill">Vetores <span>{len(df):,} × 384</span></div>
                 <div class="stat-pill">Pontos exibidos <span>{total_shown:,}</span></div>
                 <div class="stat-pill">Redução <span>384D → 2D</span></div>
             </div>""", unsafe_allow_html=True)
 
-        df_plot = df[df["sentimento"].isin(filtro_sent)].sample(n=total_shown, random_state=42)
-        fig_umap = px.scatter(df_plot,x="x",y="y",color="sentimento",
+        df_plot = df_filtered.sample(n=total_shown, random_state=42)
+        fig_umap = px.scatter(
+            df_plot, x="x", y="y", color="sentimento",
             color_discrete_map=SENTIMENT_COLORS,
-            hover_data={"texto_curto":True,"review_score":True,"x":False,"y":False},
-            labels={"sentimento":"Sentimento"},opacity=0.75)
+            hover_data={"texto_curto": True, "review_score": True, "x": False, "y": False},
+            labels={"sentimento": "Sentimento"}, opacity=0.75
+        )
         fig_umap.update_traces(marker=dict(size=4))
-        apply_theme(fig_umap,580)
+        apply_theme(fig_umap, 580)
         fig_umap.update_layout(
-            legend=dict(orientation="h",y=-0.06),
-            xaxis=dict(showticklabels=False,title="",showgrid=False,zeroline=False),
-            yaxis=dict(showticklabels=False,title="",showgrid=False,zeroline=False))
-        st.plotly_chart(fig_umap,use_container_width=True)
+            legend=dict(orientation="h", y=-0.06),
+            xaxis=dict(showticklabels=False, title="", showgrid=False, zeroline=False),
+            yaxis=dict(showticklabels=False, title="", showgrid=False, zeroline=False)
+        )
+        st.plotly_chart(fig_umap, use_container_width=True)
 
-    # ── TAB 2: BUSCA SEMÂNTICA ──
+    # ── TAB 2: BUSCA SEMÂNTICA ────────────────────────────────────
     with tab2:
         st.markdown("""<div class="insight-box">
-            <strong>Busca semântica:</strong> Seu texto é vetorizado pelo mesmo modelo e comparado via
-            <strong>similaridade de cosseno</strong> — retorna reviews semanticamente próximos mesmo com palavras diferentes.
+            <strong>Busca semântica:</strong> Compara sua query com os reviews via
+            <strong>similaridade de cosseno (TF-IDF)</strong> — retorna reviews semanticamente próximos
+            mesmo com variações de escrita.
         </div>""", unsafe_allow_html=True)
 
-        col_q, col_k = st.columns([3,1])
+        col_q, col_k = st.columns([3, 1])
         with col_q:
             query = st.text_input("Busca semântica",
                 placeholder="Ex: produto chegou quebrado · entrega muito rápida · péssimo atendimento…")
         with col_k:
-            top_k = st.slider("Resultados",3,15,7)
+            top_k = st.slider("Resultados", 3, 15, 7)
 
         if query:
             with st.spinner("Calculando similaridade..."):
+                from sklearn.feature_extraction.text import TfidfVectorizer
                 from sklearn.metrics.pairwise import cosine_similarity as cos_sim
-                model_inst = load_nlp_model()
-                q_emb  = model_inst.encode([query],convert_to_numpy=True)
-                sims   = cos_sim(q_emb,embeddings)[0]
+
+                corpus = df["review_text"].tolist()
+                vectorizer = TfidfVectorizer(max_features=5000)
+                tfidf_matrix = vectorizer.fit_transform(corpus)
+                q_vec = vectorizer.transform([query])
+                sims = cos_sim(q_vec, tfidf_matrix)[0]
                 top_idx = sims.argsort()[::-1][:top_k]
-                resultados = df.iloc[top_idx][["review_score","review_text","sentimento"]].copy()
+                resultados = df.iloc[top_idx][["review_score", "review_text", "sentimento"]].copy()
                 resultados["similaridade"] = sims[top_idx]
 
-            avg_sim = resultados["similaridade"].mean()*100
+            avg_sim = resultados["similaridade"].mean() * 100
             st.markdown(f"""<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
                 <div style="font-size:18px;font-weight:900;color:var(--text-primary);">
                     {top_k} resultados · <em style="color:var(--accent-bright)">"{query}"</em>
@@ -749,12 +722,12 @@ elif page == "Embeddings & NLP":
                 <div class="stat-pill">Sim. média <span>{avg_sim:.1f}%</span></div>
             </div>""", unsafe_allow_html=True)
 
-            col_res,col_dist = st.columns([2,1])
+            col_res, col_dist = st.columns([2, 1])
             with col_res:
-                for _,row in resultados.iterrows():
-                    stars     = "★"*int(row["review_score"])+"☆"*(5-int(row["review_score"]))
-                    sim_pct   = row["similaridade"]*100
-                    bar_color = SENTIMENT_COLORS.get(row["sentimento"],C["accent"])
+                for _, row in resultados.iterrows():
+                    stars     = "★" * int(row["review_score"]) + "☆" * (5 - int(row["review_score"]))
+                    sim_pct   = row["similaridade"] * 100
+                    bar_color = SENTIMENT_COLORS.get(row["sentimento"], C["accent"])
                     st.markdown(f"""<div class="result-card">
                         <div class="result-header">
                             <div>
@@ -763,7 +736,7 @@ elif page == "Embeddings & NLP":
                             </div>
                             <div class="result-badge">{row["sentimento"]}</div>
                         </div>
-                        <div class="result-text">{row["review_text"][:320]}{"…" if len(row["review_text"])>320 else ""}</div>
+                        <div class="result-text">{row["review_text"][:320]}{"…" if len(row["review_text"]) > 320 else ""}</div>
                         <div class="sim-bar"><div class="sim-fill" style="width:{sim_pct:.1f}%;background:{bar_color};"></div></div>
                     </div>""", unsafe_allow_html=True)
 
@@ -771,12 +744,14 @@ elif page == "Embeddings & NLP":
                 st.markdown(section("Notas encontradas"), unsafe_allow_html=True)
                 dr = resultados["review_score"].value_counts().sort_index()
                 fig_d = go.Figure(go.Bar(
-                    x=[f"★{i}" for i in dr.index],y=dr.values,
-                    marker=dict(color=[SENTIMENT_COLORS[SENTIMENT_MAP[i]] for i in dr.index],line=dict(width=0)),
-                    text=dr.values,textposition="outside",textfont=dict(color=C["white"])))
-                apply_theme(fig_d,280); fig_d.update_layout(showlegend=False,margin=dict(t=16))
-                st.plotly_chart(fig_d,use_container_width=True)
-                st.markdown(kpi("Similaridade Média",f"{avg_sim:.1f}%"), unsafe_allow_html=True)
+                    x=[f"★{i}" for i in dr.index], y=dr.values,
+                    marker=dict(color=[SENTIMENT_COLORS[SENTIMENT_MAP[i]] for i in dr.index], line=dict(width=0)),
+                    text=dr.values, textposition="outside", textfont=dict(color=C["white"])
+                ))
+                apply_theme(fig_d, 280)
+                fig_d.update_layout(showlegend=False, margin=dict(t=16))
+                st.plotly_chart(fig_d, use_container_width=True)
+                st.markdown(kpi("Similaridade Média", f"{avg_sim:.1f}%"), unsafe_allow_html=True)
         else:
             st.markdown("""<div class="empty-state">
                 <div class="empty-icon">🔍</div>
@@ -784,7 +759,7 @@ elif page == "Embeddings & NLP":
                 <div class="empty-sub">Digite qualquer texto para encontrar reviews semanticamente similares</div>
             </div>""", unsafe_allow_html=True)
 
-    # ── TAB 3: ANÁLISE DE SENTIMENTO ──
+    # ── TAB 3: ANÁLISE DE SENTIMENTO ──────────────────────────────
     with tab3:
         STOPWORDS = {
             'a','o','e','de','da','do','em','na','no','para','com','que','se','um','uma',
@@ -801,56 +776,67 @@ elif page == "Embeddings & NLP":
                 palavras.extend([w for w in tokens if w not in STOPWORDS])
             return Counter(palavras).most_common(n)
 
-        col1,col2 = st.columns(2)
+        col1, col2 = st.columns(2)
         with col1:
             st.markdown(section("Distribuição de Notas"), unsafe_allow_html=True)
             dist = df["review_score"].value_counts().sort_index()
             fig_dist = go.Figure(go.Bar(
-                x=[f"Nota {i}" for i in dist.index],y=dist.values,
-                marker=dict(color=[SENTIMENT_COLORS[SENTIMENT_MAP[i]] for i in dist.index],line=dict(width=0)),
-                text=dist.values,textposition="outside",textfont=dict(color=C["white"],size=12),
-                hovertemplate="<b>%{x}</b>: %{y:,} reviews<extra></extra>"))
-            apply_theme(fig_dist,320); fig_dist.update_layout(showlegend=False)
-            st.plotly_chart(fig_dist,use_container_width=True)
+                x=[f"Nota {i}" for i in dist.index], y=dist.values,
+                marker=dict(color=[SENTIMENT_COLORS[SENTIMENT_MAP[i]] for i in dist.index], line=dict(width=0)),
+                text=dist.values, textposition="outside", textfont=dict(color=C["white"], size=12),
+                hovertemplate="<b>%{x}</b>: %{y:,} reviews<extra></extra>"
+            ))
+            apply_theme(fig_dist, 320)
+            fig_dist.update_layout(showlegend=False)
+            st.plotly_chart(fig_dist, use_container_width=True)
 
         with col2:
             st.markdown(section("Proporção por Sentimento"), unsafe_allow_html=True)
             sc = df["sentimento"].value_counts().reindex(
                 [s for s in ["Muito Positivo","Positivo","Neutro","Negativo","Muito Negativo"] if s in df["sentimento"].unique()])
-            fig_pie = go.Figure(go.Pie(labels=sc.index,values=sc.values,hole=0.62,
-                marker=dict(colors=[SENTIMENT_COLORS[s] for s in sc.index],line=dict(color=C["bg"],width=3)),
-                textinfo="percent",hovertemplate="<b>%{label}</b>: %{value:,} (%{percent})<extra></extra>"))
+            fig_pie = go.Figure(go.Pie(
+                labels=sc.index, values=sc.values, hole=0.62,
+                marker=dict(colors=[SENTIMENT_COLORS[s] for s in sc.index], line=dict(color=C["bg"], width=3)),
+                textinfo="percent",
+                hovertemplate="<b>%{label}</b>: %{value:,} (%{percent})<extra></extra>"
+            ))
             fig_pie.add_annotation(
                 text=f"<b>{df['review_score'].mean():.2f}</b><br><span style='font-size:10px'>nota média</span>",
-                x=0.5,y=0.5,showarrow=False,font=dict(size=22,color=C["white"]))
-            apply_theme(fig_pie,320); st.plotly_chart(fig_pie,use_container_width=True)
+                x=0.5, y=0.5, showarrow=False, font=dict(size=22, color=C["white"])
+            )
+            apply_theme(fig_pie, 320)
+            st.plotly_chart(fig_pie, use_container_width=True)
 
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
         st.markdown(section("Palavras Frequentes por Sentimento"), unsafe_allow_html=True)
 
-        # BUG FIX: select_slider simplificado sem parse frágil
         opts = ["Nota 1","Nota 2","Nota 3","Nota 4","Nota 5"]
-        sent_sel = st.select_slider("Comparar notas",options=opts,value=("Nota 1","Nota 5"))
+        sent_sel = st.select_slider("Comparar notas", options=opts, value=("Nota 1", "Nota 5"))
         nota_a = int(sent_sel[0].split()[1])
         nota_b = int(sent_sel[1].split()[1])
 
-        top_a = top_palavras(df[df["review_score"]==nota_a]["review_text"])
-        top_b = top_palavras(df[df["review_score"]==nota_b]["review_text"])
+        top_a = top_palavras(df[df["review_score"] == nota_a]["review_text"])
+        top_b = top_palavras(df[df["review_score"] == nota_b]["review_text"])
 
         fig_w = go.Figure()
-        fig_w.add_trace(go.Bar(name=f"Nota {nota_a} — {SENTIMENT_MAP[nota_a]}",
-            x=[w[0] for w in top_a],y=[w[1] for w in top_a],
-            marker=dict(color=SENTIMENT_COLORS[SENTIMENT_MAP[nota_a]],line=dict(width=0)),
-            hovertemplate="<b>%{x}</b>: %{y}<extra></extra>"))
-        fig_w.add_trace(go.Bar(name=f"Nota {nota_b} — {SENTIMENT_MAP[nota_b]}",
-            x=[w[0] for w in top_b],y=[w[1] for w in top_b],
-            marker=dict(color=SENTIMENT_COLORS[SENTIMENT_MAP[nota_b]],line=dict(width=0)),
-            hovertemplate="<b>%{x}</b>: %{y}<extra></extra>"))
+        fig_w.add_trace(go.Bar(
+            name=f"Nota {nota_a} — {SENTIMENT_MAP[nota_a]}",
+            x=[w[0] for w in top_a], y=[w[1] for w in top_a],
+            marker=dict(color=SENTIMENT_COLORS[SENTIMENT_MAP[nota_a]], line=dict(width=0)),
+            hovertemplate="<b>%{x}</b>: %{y}<extra></extra>"
+        ))
+        fig_w.add_trace(go.Bar(
+            name=f"Nota {nota_b} — {SENTIMENT_MAP[nota_b]}",
+            x=[w[0] for w in top_b], y=[w[1] for w in top_b],
+            marker=dict(color=SENTIMENT_COLORS[SENTIMENT_MAP[nota_b]], line=dict(width=0)),
+            hovertemplate="<b>%{x}</b>: %{y}<extra></extra>"
+        ))
         fig_w.update_layout(barmode="group")
-        apply_theme(fig_w,380); st.plotly_chart(fig_w,use_container_width=True)
+        apply_theme(fig_w, 380)
+        st.plotly_chart(fig_w, use_container_width=True)
 
         st.markdown("""<div class="insight-box">
             <strong>Insight semântico:</strong> Reviews de <strong>nota 5</strong> concentram termos de velocidade
             e qualidade — ótimo, rápido, recomendo. Reviews de <strong>nota 1</strong> revelam falhas operacionais —
-            prazo, errado, cancelado. O modelo de embeddings captura essa polaridade automaticamente.
+            prazo, errado, cancelado. O modelo sentence-transformers captura essa polaridade automaticamente.
         </div>""", unsafe_allow_html=True)

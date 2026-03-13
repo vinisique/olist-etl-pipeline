@@ -9,6 +9,4 @@ langchain-postgres
 langchain-community
 fastembed
 pgvector
-sentence-transformers
-umap-learn
 scikit-learn
