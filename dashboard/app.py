@@ -525,7 +525,7 @@ elif page == "Análise Temporal":
         legend=dict(bgcolor="rgba(0,0,0,0)"),
         xaxis=dict(gridcolor=COLORS["grid"], tickangle=45),
         yaxis=dict(gridcolor=COLORS["grid"], title="Receita (R$)"),
-        yaxis2=dict(gridcolor="transparent", title="Pedidos")
+        yaxis2=dict(gridcolor="rgba(0,0,0,0)", title="Pedidos")
     )
     st.plotly_chart(fig, use_container_width=True)
 
