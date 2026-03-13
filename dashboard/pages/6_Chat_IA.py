@@ -49,7 +49,7 @@ SCHEMA = (
     "  dim_clientes    (customer_id PK, customer_unique_id, customer_zip_code, customer_city, customer_state)\n\n"
 
     "REGRAS OBRIGATÓRIAS:\n"
-    "  1. SEMPRE use ROUND(valor::numeric, 2) para arredondar — nunca ROUND(double, int)\n"
+    "  1. SEMPRE use ROUND((expressao)::numeric, 2) — o cast ::numeric deve envolver TODA a expressao dentro do ROUND, exemplo: ROUND((100.0 * a / b)::numeric, 2) — NUNCA aplique ::numeric apenas no divisor\n"
     "  2. Para ano e mês use purchase_year e purchase_month da fato_pedidos — nunca JOIN com dim_tempo\n"
     "  3. Para cidade e estado use customer_city e customer_state da fato_pedidos — nunca JOIN com dim_localizacao\n"
     "  4. review_score já está na fato_pedidos — não precisa de JOIN extra\n"
@@ -121,7 +121,7 @@ if prompt := st.chat_input("Ex: Ticket médio por pagamento em 2017? Crescimento
                 cols, rows = run_query(sql)
 
                 if cols is None:
-                    answer = f"Erro ao executar a query:\n{rows}\n\nSQL gerado:\n{sql}"
+                    answer = "Desculpe, não consegui processar essa pergunta. Tente reformulá-la de outra forma."
                 else:
                     result_text = f"Colunas: {cols}\nDados: {[list(r) for r in rows]}"
                     interpret_messages = [
