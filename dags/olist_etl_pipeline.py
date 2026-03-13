@@ -3,24 +3,20 @@ DAG: olist_etl_pipeline
 Pipeline ETL End-to-End — Olist E-commerce Dataset
 
 Orquestra as 4 etapas do pipeline:
-  1. ingestao   → Baixa dataset do Kaggle e envia para S3 (LocalStack) em Parquet
-  2. processamento → PySpark: RAW → TRUSTED (limpeza, tipagem, joins)
-  3. carga       → TRUSTED → PostgreSQL DW (esquema estrela)
-  4. analise     → Queries analíticas e exportação para o dashboard
+  1. ingestao       → Baixa dataset do Kaggle e salva em Parquet no volume local (camada RAW)
+  2. processamento  → PySpark: RAW → TRUSTED (limpeza, tipagem, joins)
+  3. carga          → TRUSTED → PostgreSQL DW (esquema estrela)
+  4. analise        → Queries analíticas e exportação dos CSVs para o dashboard
 """
 
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 import logging
 
 log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────
-# Configuração default da DAG
-# ─────────────────────────────────────────
 default_args = {
     "owner": "vinicius.siqueira",
     "depends_on_past": False,
@@ -30,44 +26,31 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
+# Caminhos do Data Lake no volume compartilhado entre containers
+LAKE_BASE   = "/opt/airflow/scripts/data_lake"
+RAW_PATH    = f"{LAKE_BASE}/raw"
+TRUSTED_PATH = f"{LAKE_BASE}/trusted"
+EXPORT_PATH = "/opt/airflow/scripts/exports"
+
+
 # ─────────────────────────────────────────
-# Tasks
+# Task 1 — Ingestão
 # ─────────────────────────────────────────
 
 def task_ingestao(**context):
     """
-    Etapa 1 — Ingestão
     Baixa os CSVs do Kaggle, converte para Parquet
-    e envia para o bucket S3 no LocalStack (camada RAW).
+    e salva na camada RAW do Data Lake (volume local).
     """
     import os
-    import json
-    import boto3
     import pandas as pd
     import kagglehub
-    from datetime import datetime
-    from io import BytesIO
+    from datetime import datetime as dt
 
     log.info("🚀 Iniciando ingestão — Olist Dataset")
 
-    # Configurar cliente S3 apontando para LocalStack
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=os.environ.get("LOCALSTACK_ENDPOINT", "http://localstack:4566"),
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        region_name="us-east-1",
-    )
+    os.makedirs(RAW_PATH, exist_ok=True)
 
-    bucket = os.environ.get("S3_BUCKET", "olist-data-lake")
-
-    # Criar bucket se não existir
-    existing = [b["Name"] for b in s3.list_buckets().get("Buckets", [])]
-    if bucket not in existing:
-        s3.create_bucket(Bucket=bucket)
-        log.info(f"✅ Bucket criado: {bucket}")
-
-    # Baixar dataset
     path = kagglehub.dataset_download("olistbr/brazilian-ecommerce")
     log.info(f"✅ Dataset baixado em: {path}")
 
@@ -88,70 +71,61 @@ def task_ingestao(**context):
 
     for csv_file, table_name in TABLES.items():
         df = pd.read_csv(f"{path}/{csv_file}")
-        df["_ingested_at"] = datetime.now().isoformat()
+        df["_ingested_at"] = dt.now().isoformat()
         df["_source_file"] = csv_file
 
-        # Converter para Parquet em memória
-        buffer = BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)
-
-        # Upload para S3
-        s3_key = f"raw/{table_name}/data.parquet"
-        s3.put_object(Bucket=bucket, Key=s3_key, Body=buffer.getvalue())
+        table_path = f"{RAW_PATH}/{table_name}"
+        os.makedirs(table_path, exist_ok=True)
+        output = f"{table_path}/data.parquet"
+        df.to_parquet(output, index=False)
 
         total_rows += len(df)
-        results.append({"table": table_name, "rows": len(df), "s3_key": s3_key})
-        log.info(f"   ✅ {table_name:<25} {len(df):>10,} linhas → s3://{bucket}/{s3_key}")
+        results.append({"table": table_name, "rows": len(df), "path": output})
+        log.info(f"   ✅ {table_name:<25} {len(df):>10,} linhas → {output}")
 
-    log.info(f"\n✅ Ingestão concluída — {len(results)} tabelas · {total_rows:,} linhas")
-
-    # Passar resultado para a próxima task via XCom
+    log.info(f"✅ Ingestão concluída — {len(results)} tabelas · {total_rows:,} linhas")
     return {"tables": results, "total_rows": total_rows}
 
 
+# ─────────────────────────────────────────
+# Task 2 — Processamento com PySpark
+# ─────────────────────────────────────────
+
 def task_processamento(**context):
     """
-    Etapa 2 — Processamento com PySpark
-    Lê Parquets da camada RAW (S3/LocalStack),
-    aplica limpeza e tipagem, e salva na camada TRUSTED.
+    Lê Parquets da camada RAW (volume local),
+    aplica limpeza e tipagem com PySpark,
+    e salva na camada TRUSTED.
     """
     import os
     from pyspark.sql import SparkSession
     from pyspark.sql import functions as F
+    from pyspark.sql.types import DoubleType, IntegerType
 
     log.info("🚀 Iniciando processamento PySpark")
 
-    localstack_endpoint = os.environ.get("LOCALSTACK_ENDPOINT", "http://localstack:4566")
-
     spark = (
-        SparkSession.builder.appName("olist-etl-processing")
+        SparkSession.builder
+        .appName("olist-etl-processing")
         .config("spark.driver.memory", "2g")
-        .config("spark.hadoop.fs.s3a.endpoint", localstack_endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", "test")
-        .config("spark.hadoop.fs.s3a.secret.key", "test")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("ERROR")
 
-    bucket = os.environ.get("S3_BUCKET", "olist-data-lake")
-    RAW = f"s3a://{bucket}/raw"
-    TRUSTED = f"s3a://{bucket}/trusted"
+    os.makedirs(TRUSTED_PATH, exist_ok=True)
 
-    # Ler RAW
-    orders   = spark.read.parquet(f"{RAW}/orders")
-    items    = spark.read.parquet(f"{RAW}/order_items")
-    payments = spark.read.parquet(f"{RAW}/order_payments")
-    reviews  = spark.read.parquet(f"{RAW}/order_reviews")
-    customers = spark.read.parquet(f"{RAW}/customers")
-    sellers  = spark.read.parquet(f"{RAW}/sellers")
-    products = spark.read.parquet(f"{RAW}/products")
-    category = spark.read.parquet(f"{RAW}/category_translation")
+    # ── Leitura da camada RAW ──────────────────────────────────────
+    orders    = spark.read.parquet(f"{RAW_PATH}/orders")
+    items     = spark.read.parquet(f"{RAW_PATH}/order_items")
+    payments  = spark.read.parquet(f"{RAW_PATH}/order_payments")
+    reviews   = spark.read.parquet(f"{RAW_PATH}/order_reviews")
+    customers = spark.read.parquet(f"{RAW_PATH}/customers")
+    sellers   = spark.read.parquet(f"{RAW_PATH}/sellers")
+    products  = spark.read.parquet(f"{RAW_PATH}/products")
+    category  = spark.read.parquet(f"{RAW_PATH}/category_translation")
 
-    # Processar orders
+    # ── Processar orders ───────────────────────────────────────────
     date_cols = [
         "order_purchase_timestamp", "order_approved_at",
         "order_delivered_carrier_date", "order_delivered_customer_date",
@@ -173,21 +147,23 @@ def task_processamento(**context):
             F.datediff("order_delivered_customer_date", "order_purchase_timestamp"))
         .withColumn("is_late",
             F.when(
-                F.col("order_delivered_customer_date") > F.col("order_estimated_delivery_date"), 1
+                F.col("order_delivered_customer_date") >
+                F.col("order_estimated_delivery_date"), 1
             ).otherwise(0))
         .drop("_ingested_at", "_source_file")
     )
 
-    # Processar itens
+    # ── Processar itens ────────────────────────────────────────────
     items_clean = (
         items
-        .withColumn("price",          F.col("price").cast("double"))
-        .withColumn("freight_value",  F.col("freight_value").cast("double"))
-        .withColumn("item_total",     F.col("price") + F.col("freight_value"))
+        .withColumn("price",         F.col("price").cast(DoubleType()))
+        .withColumn("freight_value", F.col("freight_value").cast(DoubleType()))
+        .withColumn("item_total",    F.col("price") + F.col("freight_value"))
+        .filter(F.col("price") > 0)
         .drop("_ingested_at", "_source_file")
     )
 
-    # Processar pagamentos — agregar por pedido
+    # ── Agregar pagamentos por pedido ──────────────────────────────
     payments_agg = (
         payments
         .groupBy("order_id")
@@ -198,42 +174,61 @@ def task_processamento(**context):
         )
     )
 
-    # Processar reviews — agregar por pedido
+    # ── Agregar reviews por pedido ─────────────────────────────────
     reviews_agg = (
         reviews
+        .withColumn("review_score", F.col("review_score").cast(IntegerType()))
+        .filter(F.col("review_score").isNotNull())
         .groupBy("order_id")
         .agg(F.avg("review_score").alias("review_score"))
     )
 
-    # Produtos com categoria em inglês
+    # ── Produtos com categoria em inglês ───────────────────────────
     products_clean = (
         products
-        .join(category, "product_category_name", "left")
+        .join(category.select("product_category_name", "product_category_name_english"),
+              "product_category_name", "left")
+        .fillna("unknown", subset=["product_category_name_english"])
         .drop("_ingested_at", "_source_file")
     )
 
-    # Montar tabela fato
-    fato = (
-        orders_clean
-        .join(items_clean.groupBy("order_id").agg(
+    # ── Agregar itens por pedido para o fato ───────────────────────
+    items_agg = (
+        items_clean
+        .groupBy("order_id")
+        .agg(
             F.sum("item_total").alias("item_total"),
             F.sum("price").alias("item_price"),
             F.sum("freight_value").alias("freight_value"),
             F.first("seller_id").alias("seller_id"),
             F.first("product_id").alias("product_id"),
-        ), "order_id", "left")
-        .join(payments_agg, "order_id", "left")
-        .join(reviews_agg,  "order_id", "left")
-        .join(customers.select("customer_id", "customer_state", "customer_city"),
-              "customer_id", "left")
+        )
     )
 
-    # Salvar TRUSTED
-    fato.write.mode("overwrite").parquet(f"{TRUSTED}/fato_pedidos")
-    orders_clean.write.mode("overwrite").parquet(f"{TRUSTED}/orders")
-    products_clean.write.mode("overwrite").parquet(f"{TRUSTED}/products")
-    customers.drop("_ingested_at","_source_file").write.mode("overwrite").parquet(f"{TRUSTED}/customers")
-    sellers.drop("_ingested_at","_source_file").write.mode("overwrite").parquet(f"{TRUSTED}/sellers")
+    # ── Montar tabela fato ─────────────────────────────────────────
+    fato = (
+        orders_clean
+        .join(items_agg,    "order_id", "left")
+        .join(payments_agg, "order_id", "left")
+        .join(reviews_agg,  "order_id", "left")
+        .join(
+            customers.select("customer_id", "customer_state", "customer_city")
+                     .drop("_ingested_at", "_source_file"),
+            "customer_id", "left"
+        )
+    )
+
+    # ── Salvar camada TRUSTED ──────────────────────────────────────
+    trusted_tables = {
+        "fato_pedidos": fato,
+        "dim_products":  products_clean,
+        "dim_customers": customers.drop("_ingested_at", "_source_file"),
+        "dim_sellers":   sellers.drop("_ingested_at", "_source_file"),
+    }
+
+    for name, df in trusted_tables.items():
+        df.write.mode("overwrite").parquet(f"{TRUSTED_PATH}/{name}")
+        log.info(f"   ✅ TRUSTED/{name:<20} {df.count():>10,} linhas")
 
     count = fato.count()
     log.info(f"✅ Processamento concluído — fato_pedidos: {count:,} linhas")
@@ -241,17 +236,18 @@ def task_processamento(**context):
     return {"fato_rows": count}
 
 
+# ─────────────────────────────────────────
+# Task 3 — Carga no Data Warehouse
+# ─────────────────────────────────────────
+
 def task_carga(**context):
     """
-    Etapa 3 — Carga no Data Warehouse
-    Lê camada TRUSTED do S3 e carrega no PostgreSQL
-    com esquema estrela.
+    Lê camada TRUSTED (volume local) e carrega
+    no PostgreSQL DW com esquema estrela.
     """
     import os
     import pandas as pd
-    import boto3
-    from sqlalchemy import create_engine, text
-    from io import BytesIO
+    from sqlalchemy import create_engine
 
     log.info("🚀 Iniciando carga no Data Warehouse")
 
@@ -261,41 +257,43 @@ def task_carga(**context):
     )
     engine = create_engine(conn_str)
 
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=os.environ.get("LOCALSTACK_ENDPOINT", "http://localstack:4566"),
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        region_name="us-east-1",
-    )
-
-    bucket = os.environ.get("S3_BUCKET", "olist-data-lake")
-
-    def read_parquet_from_s3(key):
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        return pd.read_parquet(BytesIO(obj["Body"].read()))
-
-    # Carregar tabelas no DW
+    # Mapeamento: tabela DW → pasta no TRUSTED
+    # O PySpark salva em múltiplos arquivos part-*.parquet por pasta
     tables = {
-        "fato_pedidos":  "trusted/fato_pedidos/data.parquet",
-        "dim_clientes":  "trusted/customers/data.parquet",
-        "dim_vendedores":"trusted/sellers/data.parquet",
-        "dim_produtos":  "trusted/products/data.parquet",
+        "fato_pedidos":  f"{TRUSTED_PATH}/fato_pedidos",
+        "dim_produtos":  f"{TRUSTED_PATH}/dim_products",
+        "dim_clientes":  f"{TRUSTED_PATH}/dim_customers",
+        "dim_vendedores": f"{TRUSTED_PATH}/dim_sellers",
     }
 
-    for table_name, s3_key in tables.items():
-        df = read_parquet_from_s3(s3_key)
-        df.to_sql(table_name, engine, if_exists="replace", index=False)
+    for table_name, parquet_dir in tables.items():
+        # Lê todos os arquivos part-*.parquet da pasta
+        part_files = [
+            os.path.join(parquet_dir, f)
+            for f in os.listdir(parquet_dir)
+            if f.endswith(".parquet")
+        ]
+        if not part_files:
+            log.warning(f"⚠️  Nenhum parquet encontrado em {parquet_dir}")
+            continue
+
+        frames = [pd.read_parquet(f) for f in part_files]
+        df = pd.concat(frames, ignore_index=True)
+
+        df.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=5000)
         log.info(f"   ✅ {table_name:<20} {len(df):>10,} linhas carregadas")
 
     log.info("✅ Carga concluída")
 
 
+# ─────────────────────────────────────────
+# Task 4 — Análises e exportação
+# ─────────────────────────────────────────
+
 def task_analise(**context):
     """
-    Etapa 4 — Análises finais
-    Queries analíticas no DW e exportação dos CSVs
-    para consumo pelo dashboard Streamlit.
+    Queries analíticas no DW PostgreSQL
+    e exportação dos CSVs para o dashboard Streamlit.
     """
     import os
     import pandas as pd
@@ -308,65 +306,85 @@ def task_analise(**context):
         "postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw"
     )
     engine = create_engine(conn_str)
-    export_path = "/opt/airflow/scripts/exports"
-    os.makedirs(export_path, exist_ok=True)
+    os.makedirs(EXPORT_PATH, exist_ok=True)
 
     queries = {
         "receita_mensal": """
-            SELECT purchase_year AS ano, purchase_month AS mes,
-                   COUNT(DISTINCT order_id)          AS pedidos,
-                   ROUND(SUM(item_total)::numeric, 2) AS receita,
-                   ROUND(AVG(item_total)::numeric, 2) AS ticket_medio,
-                   ROUND(AVG(freight_value)::numeric, 2) AS frete_medio
+            SELECT
+                purchase_year  AS ano,
+                purchase_month AS mes,
+                COUNT(DISTINCT order_id)                        AS pedidos,
+                ROUND(CAST(SUM(item_total)  AS numeric), 2)    AS receita,
+                ROUND(CAST(AVG(item_price)  AS numeric), 2)    AS ticket_medio,
+                ROUND(CAST(AVG(freight_value) AS numeric), 2)  AS frete_medio
             FROM fato_pedidos
             WHERE order_status = 'delivered'
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
+
         "performance_categorias": """
-            SELECT p.product_category_name_english AS categoria,
-                   COUNT(DISTINCT f.order_id)       AS pedidos,
-                   ROUND(SUM(f.item_total)::numeric, 2) AS receita,
-                   ROUND(AVG(f.item_total)::numeric, 2) AS ticket_medio,
-                   ROUND(AVG(f.review_score)::numeric, 2) AS nota_media
+            SELECT
+                p.product_category_name_english              AS categoria,
+                COUNT(DISTINCT f.order_id)                   AS pedidos,
+                ROUND(CAST(SUM(f.item_total)  AS numeric), 2) AS receita,
+                ROUND(CAST(AVG(f.item_price)  AS numeric), 2) AS ticket_medio,
+                ROUND(CAST(AVG(f.review_score) AS numeric), 2) AS nota_media
             FROM fato_pedidos f
             JOIN dim_produtos p ON f.product_id = p.product_id
             WHERE p.product_category_name_english IS NOT NULL
+              AND p.product_category_name_english != 'unknown'
             GROUP BY 1
             ORDER BY receita DESC
         """,
+
         "satisfacao_estados": """
-            SELECT customer_state AS estado,
-                   COUNT(DISTINCT order_id)           AS pedidos,
-                   ROUND(AVG(review_score)::numeric, 2) AS nota_media,
-                   ROUND(AVG(delivery_days)::numeric, 1) AS prazo_medio_dias,
-                   ROUND(AVG(is_late::int)*100, 1)    AS pct_atraso
+            SELECT
+                customer_state                                     AS estado,
+                COUNT(DISTINCT order_id)                           AS pedidos,
+                ROUND(CAST(AVG(review_score)   AS numeric), 2)    AS nota_media,
+                ROUND(CAST(AVG(delivery_days)  AS numeric), 1)    AS prazo_medio_dias,
+                ROUND(CAST(AVG(is_late) * 100  AS numeric), 1)    AS pct_atraso
             FROM fato_pedidos
             WHERE order_status = 'delivered'
+              AND customer_state IS NOT NULL
             GROUP BY 1
             ORDER BY pedidos DESC
         """,
+
         "tempo_entrega": """
-            SELECT purchase_year AS ano, purchase_month AS mes,
-                   ROUND(AVG(delivery_days)::numeric, 1)    AS prazo_medio,
-                   ROUND(AVG(is_late::int)*100, 1)          AS pct_atraso
+            SELECT
+                purchase_year  AS ano,
+                purchase_month AS mes,
+                ROUND(CAST(AVG(delivery_days) AS numeric), 1)   AS prazo_medio,
+                MIN(delivery_days)                               AS prazo_minimo,
+                MAX(delivery_days)                               AS prazo_maximo,
+                SUM(is_late)                                     AS atrasados,
+                COUNT(*)                                         AS total_entregas,
+                ROUND(CAST(AVG(is_late) * 100 AS numeric), 1)   AS pct_atraso
             FROM fato_pedidos
-            WHERE order_status = 'delivered' AND delivery_days IS NOT NULL
+            WHERE order_status = 'delivered'
+              AND delivery_days IS NOT NULL
+              AND delivery_days > 0
             GROUP BY 1, 2
             ORDER BY 1, 2
         """,
+
         "performance_vendedores": """
-            SELECT f.seller_id,
-                   s.seller_state AS estado,
-                   s.seller_city  AS cidade,
-                   COUNT(DISTINCT f.order_id)               AS pedidos,
-                   ROUND(SUM(f.item_total)::numeric, 2)     AS receita,
-                   ROUND(AVG(f.item_total)::numeric, 2)     AS ticket_medio,
-                   ROUND(AVG(f.review_score)::numeric, 2)   AS nota_media,
-                   ROUND(AVG(f.is_late::int)*100, 1)        AS pct_atraso
+            SELECT
+                f.seller_id,
+                s.seller_state                                      AS estado,
+                s.seller_city                                       AS cidade,
+                COUNT(DISTINCT f.order_id)                          AS pedidos,
+                ROUND(CAST(SUM(f.item_total)   AS numeric), 2)     AS receita,
+                ROUND(CAST(AVG(f.item_price)   AS numeric), 2)     AS ticket_medio,
+                ROUND(CAST(AVG(f.review_score) AS numeric), 2)     AS nota_media,
+                ROUND(CAST(AVG(f.is_late) * 100 AS numeric), 1)    AS pct_atraso
             FROM fato_pedidos f
             JOIN dim_vendedores s ON f.seller_id = s.seller_id
-            GROUP BY 1, 2, 3
+            WHERE f.order_status = 'delivered'
+            GROUP BY f.seller_id, s.seller_state, s.seller_city
+            HAVING COUNT(DISTINCT f.order_id) >= 10
             ORDER BY receita DESC
             LIMIT 50
         """,
@@ -374,8 +392,9 @@ def task_analise(**context):
 
     for name, query in queries.items():
         df = pd.read_sql(text(query), engine)
-        df.to_csv(f"{export_path}/{name}.csv", index=False)
-        log.info(f"   ✅ {name:<30} {len(df):>6} linhas exportadas")
+        output = f"{EXPORT_PATH}/{name}.csv"
+        df.to_csv(output, index=False)
+        log.info(f"   ✅ {name:<30} {len(df):>6} linhas → {output}")
 
     log.info("✅ Análises concluídas — CSVs prontos para o dashboard")
 
@@ -387,16 +406,16 @@ with DAG(
     dag_id="olist_etl_pipeline",
     description="Pipeline ETL End-to-End — Olist E-commerce",
     default_args=default_args,
-    schedule_interval=None,          # Trigger manual
+    schedule_interval=None,
     start_date=days_ago(1),
     catchup=False,
-    tags=["olist", "etl", "pyspark", "s3", "postgresql"],
+    tags=["olist", "etl", "pyspark", "postgresql"],
 ) as dag:
 
     t1 = PythonOperator(
         task_id="ingestao",
         python_callable=task_ingestao,
-        doc_md="Baixa CSVs do Kaggle → converte para Parquet → envia para S3 (LocalStack RAW)",
+        doc_md="Baixa CSVs do Kaggle → converte para Parquet → salva no volume RAW",
     )
 
     t2 = PythonOperator(
@@ -408,13 +427,13 @@ with DAG(
     t3 = PythonOperator(
         task_id="carga",
         python_callable=task_carga,
-        doc_md="TRUSTED → PostgreSQL DW (esquema estrela)",
+        doc_md="TRUSTED (Parquet) → PostgreSQL DW (esquema estrela)",
     )
 
     t4 = PythonOperator(
         task_id="analise",
         python_callable=task_analise,
-        doc_md="Queries analíticas no DW → exporta CSVs para o dashboard",
+        doc_md="Queries analíticas no DW → exporta CSVs para o dashboard Streamlit",
     )
 
     t1 >> t2 >> t3 >> t4
