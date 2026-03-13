@@ -400,6 +400,77 @@ def task_analise(**context):
 
 
 # ─────────────────────────────────────────
+# Task 5 — Embeddings (RAG + pgvector)
+# ─────────────────────────────────────────
+
+def task_embeddings(**context):
+    """
+    Lê os reviews da camada RAW, gera embeddings com fastembed
+    e salva na tabela reviews_embeddings no pgvector.
+    """
+    import os
+    import pandas as pd
+    from sqlalchemy import create_engine, text
+    from fastembed import TextEmbedding
+
+    log.info("🚀 Iniciando geração de embeddings")
+
+    conn_str = os.environ.get(
+        "OLIST_DW_CONN",
+        "postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw"
+    )
+    engine = create_engine(conn_str)
+
+    # Lê reviews da camada RAW
+    reviews = pd.read_parquet(f"{RAW_PATH}/order_reviews/data.parquet")
+
+    # Filtra apenas reviews com texto
+    reviews = reviews[
+        reviews["review_comment_message"].notna() &
+        (reviews["review_comment_message"].str.strip() != "")
+    ][["order_id", "review_score", "review_comment_message"]].copy()
+
+    reviews = reviews.sample(n=5000, random_state=42).reset_index(drop=True)
+    reviews.columns = ["order_id", "review_score", "review_text"]
+    reviews["review_score"] = reviews["review_score"].astype(int)
+
+    log.info(f"   📝 {len(reviews):,} reviews com texto encontrados")
+
+    # Gera embeddings em batches
+    model = TextEmbedding("BAAI/bge-small-en-v1.5")
+    texts = reviews["review_text"].tolist()
+
+    log.info("   🔢 Gerando embeddings...")
+    embeddings = list(model.embed(texts))
+    reviews["embedding"] = [e.tolist() for e in embeddings]
+
+    # Salva no pgvector
+    records = reviews[["order_id", "review_score", "review_text", "embedding"]].to_dict("records")
+
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE reviews_embeddings RESTART IDENTITY"))
+
+    with engine.begin() as conn:
+        for i, row in enumerate(records):
+            conn.execute(
+                text("""
+                    INSERT INTO reviews_embeddings (order_id, review_score, review_text, embedding)
+                    VALUES (:order_id, :review_score, :review_text, :embedding)
+                """),
+                {
+                    "order_id":     row["order_id"],
+                    "review_score": row["review_score"],
+                    "review_text":  row["review_text"],
+                    "embedding":    str(row["embedding"]),
+                }
+            )
+            if (i + 1) % 1000 == 0:
+                log.info(f"   ✅ {i+1:,}/{len(records):,} embeddings salvos")
+
+    log.info(f"✅ Embeddings concluídos — {len(records):,} reviews vetorizados")
+    return {"embeddings_count": len(records)}
+
+# ─────────────────────────────────────────
 # Definição da DAG
 # ─────────────────────────────────────────
 with DAG(
@@ -436,4 +507,10 @@ with DAG(
         doc_md="Queries analíticas no DW → exporta CSVs para o dashboard Streamlit",
     )
 
-    t1 >> t2 >> t3 >> t4
+    t5 = PythonOperator(
+        task_id="embeddings",
+        python_callable=task_embeddings,
+        doc_md="Reviews RAW → fastembed → pgvector (reviews_embeddings)",
+    )
+
+    t1 >> t2 >> t3 >> t4 >> t5
