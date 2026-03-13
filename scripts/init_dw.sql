@@ -3,6 +3,7 @@
 
 -- Extensões úteis
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Schema para o Data Warehouse
 CREATE SCHEMA IF NOT EXISTS dw;

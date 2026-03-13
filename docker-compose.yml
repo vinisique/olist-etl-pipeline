@@ -64,7 +64,7 @@ services:
   # PostgreSQL — Data Warehouse do projeto
   # ─────────────────────────────────────────
   postgres-dw:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: olist_postgres_dw
     environment:
       POSTGRES_USER: olist
