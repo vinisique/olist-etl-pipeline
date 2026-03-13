@@ -1,0 +1,11 @@
+streamlit
+plotly
+pandas
+sqlalchemy
+psycopg2-binary
+langchain
+langchain-groq
+langchain-postgres
+langchain-community
+fastembed
+pgvector

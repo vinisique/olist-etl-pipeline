@@ -28,6 +28,11 @@ x-airflow-common: &airflow-common
       psycopg2-binary
       boto3
       pyarrow
+      langchain
+      langchain-groq
+      langchain-postgres
+      sentence-transformers
+      pgvector
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
@@ -175,9 +180,9 @@ services:
     environment:
       OLIST_DW_CONN: postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw
       DATA_DIR: /app/data
+      GROQ_API_KEY: ${GROQ_API_KEY}
     command: >
-      bash -c "pip install streamlit plotly pandas sqlalchemy psycopg2-binary -q &&
-               streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+      bash -c "pip install -r requirements.txt -q && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
     depends_on:
       postgres-dw:
         condition: service_healthy
