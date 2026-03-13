@@ -13,7 +13,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # Conexão com o Data Warehouse (PostgreSQL do projeto)
     OLIST_DW_CONN: postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw
-    # Conexão com LocalStack (simula AWS S3)
+    # Conexão com LocalStack (simula AWS S3) — referência de arquitetura
     AWS_ACCESS_KEY_ID: test
     AWS_SECRET_ACCESS_KEY: test
     AWS_DEFAULT_REGION: us-east-1
@@ -37,8 +37,6 @@ x-airflow-common: &airflow-common
     postgres-airflow:
       condition: service_healthy
     postgres-dw:
-      condition: service_healthy
-    localstack:
       condition: service_healthy
 
 services:
@@ -86,6 +84,7 @@ services:
 
   # ─────────────────────────────────────────
   # LocalStack — Simula AWS S3 (Data Lake)
+  # Referência de arquitetura — pipeline usa volume local
   # ─────────────────────────────────────────
   localstack:
     image: localstack/localstack:3.0
@@ -100,11 +99,6 @@ services:
     volumes:
       - localstack_data:/tmp/localstack
       - ./scripts/init_s3.sh:/etc/localstack/init/ready.d/init_s3.sh
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
 
   # ─────────────────────────────────────────
