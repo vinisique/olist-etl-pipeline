@@ -25,6 +25,7 @@ x-airflow-common: &airflow-common
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./logs:/opt/airflow/logs
+    - ./notebooks:/app/notebooks
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres-airflow:
@@ -162,7 +163,7 @@ services:
     working_dir: /app
     volumes:
       - ./dashboard:/app
-      - ./scripts/exports:/app/data  # ← CSVs gerados pelo pipeline alimentam o dashboard
+      - ./scripts/exports:/app/data
     ports:
       - "8501:8501"
     environment:
