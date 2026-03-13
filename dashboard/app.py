@@ -76,7 +76,9 @@ header[data-testid="stHeader"] { background: transparent; }
     flex-direction: column;
     gap: 3px;
 }
-[data-testid="stSidebar"] [data-testid="stPills"] button {
+
+/* BOTÕES DA SIDEBAR */
+section[data-testid="stSidebar"] button {
     background: transparent !important;
     border: 1px solid transparent !important;
     border-radius: 10px !important;
@@ -88,25 +90,59 @@ header[data-testid="stHeader"] { background: transparent; }
     padding: 10px 14px !important;
     width: 100% !important;
     justify-content: flex-start !important;
-    transition: none !important;
-    box-shadow: none !important;
-    transform: none !important;
+    transition: all 0.18s ease !important;
 }
-[data-testid="stSidebar"] [data-testid="stPills"] button:hover {
-    background: var(--bg-elevated) !important;
+
+/* HOVER */
+section[data-testid="stSidebar"] button:hover {
+    background: linear-gradient(
+        90deg,
+        rgba(99,102,241,0.15),
+        rgba(34,211,238,0.05)
+    ) !important;
+
+    border-color: rgba(99,102,241,0.35) !important;
     color: var(--text-primary) !important;
-    border-color: var(--border) !important;
-    transition: none !important;
-    box-shadow: none !important;
-    transform: none !important;
 }
-[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"] {
-    background: var(--accent-glow) !important;
+
+/* BOTÃO ATIVO */
+section[data-testid="stSidebar"] button[aria-selected="true"] {
+    background: linear-gradient(
+        90deg,
+        rgba(99,102,241,0.30),
+        rgba(34,211,238,0.10)
+    ) !important;
+
+    border-color: rgba(99,102,241,0.6) !important;
     color: var(--accent-bright) !important;
-    border-color: rgba(99,102,241,0.25) !important;
-    box-shadow: none !important;
-    transform: none !important;
+    box-shadow: 0 0 14px rgba(99,102,241,0.25) !important;
 }
+
+/* ativo */
+[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"] {
+    background: linear-gradient(
+        90deg,
+        rgba(99,102,241,0.22),
+        rgba(34,211,238,0.08)
+    ) !important;
+    color: var(--accent-bright) !important;
+    border-color: rgba(99,102,241,0.45) !important;
+    box-shadow: 0 0 12px rgba(99,102,241,0.15) !important;
+    position: relative;
+}
+
+/* barra lateral ativa */
+[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"]::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 20%;
+    height: 60%;
+    width: 3px;
+    border-radius: 3px;
+    background: linear-gradient(180deg, #6366F1, #22D3EE);
+}
+
 .nav-item.active { background: var(--accent-glow); color: var(--accent-bright) !important; border-color: rgba(99,102,241,0.25); }
 
 .page-header {
