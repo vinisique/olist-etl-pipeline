@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 
 st.set_page_config(page_title="Chat IA — Olist", page_icon="🤖")
 st.title("🤖 Chat com os Dados da Olist")
-st.caption("Faça perguntas em linguagem natural sobre o e-commerce brasileiro")
+st.caption("Faça perguntas sobre métricas do e-commerce ou sobre o que os clientes falam nos reviews")
 
 DB_CONN = os.environ.get("OLIST_DW_CONN", "postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
@@ -18,59 +18,39 @@ if "messages" not in st.session_state:
 
 SCHEMA = (
     "Você é um especialista em SQL PostgreSQL. Gere APENAS SQL válido, sem explicações, sem markdown.\n\n"
-
     "TABELA PRINCIPAL: fato_pedidos\n"
-    "  order_id          VARCHAR  -- identificador único do pedido\n"
-    "  customer_id       VARCHAR  -- chave para dim_clientes\n"
-    "  product_id        VARCHAR  -- chave para dim_produtos\n"
-    "  seller_id         VARCHAR  -- chave para dim_vendedores\n"
-    "  order_status      VARCHAR  -- use 'delivered' para pedidos entregues\n"
-    "  order_purchase_timestamp TIMESTAMP\n"
-    "  order_delivered_customer_date TIMESTAMP\n"
-    "  order_estimated_delivery_date TIMESTAMP\n"
-    "  purchase_year     INTEGER  -- 2016, 2017 ou 2018\n"
-    "  purchase_month    INTEGER  -- 1 a 12\n"
-    "  purchase_day      INTEGER\n"
-    "  delivery_days     INTEGER  -- dias entre compra e entrega\n"
-    "  is_late           INTEGER  -- 1=atrasado, 0=no prazo\n"
-    "  item_price        NUMERIC  -- preço do item sem frete\n"
-    "  item_freight      NUMERIC  -- valor do frete\n"
-    "  item_total        NUMERIC  -- item_price + item_freight, use para receita e ticket médio\n"
-    "  payment_type      VARCHAR  -- 'credit_card', 'boleto', 'voucher', 'debit_card'\n"
-    "  payment_value     NUMERIC  -- valor total pago (pode incluir parcelamento)\n"
-    "  installments      INTEGER  -- número de parcelas\n"
-    "  review_score      INTEGER  -- avaliação do cliente de 1 a 5\n"
-    "  customer_state    VARCHAR  -- ex: 'SP', 'RJ', 'MG'\n"
-    "  customer_city     VARCHAR  -- ex: 'sao paulo', 'campinas'\n\n"
-
-    "DIMENSÕES (use JOIN quando precisar de atributos extras):\n"
+    "  order_id, customer_id, product_id, seller_id,\n"
+    "  order_status VARCHAR ('delivered', 'canceled', etc),\n"
+    "  order_purchase_timestamp TIMESTAMP,\n"
+    "  order_delivered_customer_date TIMESTAMP,\n"
+    "  order_estimated_delivery_date TIMESTAMP,\n"
+    "  purchase_year INTEGER, purchase_month INTEGER, purchase_day INTEGER,\n"
+    "  delivery_days INTEGER, is_late INTEGER (1=atrasado, 0=no prazo),\n"
+    "  item_price NUMERIC, item_freight NUMERIC,\n"
+    "  item_total NUMERIC (use para receita e ticket médio),\n"
+    "  payment_type VARCHAR, payment_value NUMERIC, installments INTEGER,\n"
+    "  review_score INTEGER (1 a 5),\n"
+    "  customer_state VARCHAR, customer_city VARCHAR\n\n"
+    "DIMENSÕES:\n"
     "  dim_vendedores  (seller_id PK, seller_zip_code, seller_city, seller_state)\n"
-    "  dim_produtos    (product_id PK, product_category_name, product_category_name_english, product_weight_g, product_length_cm, product_height_cm, product_width_cm)\n"
+    "  dim_produtos    (product_id PK, product_category_name, product_category_name_english, product_weight_g)\n"
     "  dim_clientes    (customer_id PK, customer_unique_id, customer_zip_code, customer_city, customer_state)\n\n"
-
     "REGRAS OBRIGATÓRIAS:\n"
-    "  1. SEMPRE use ROUND((expressao)::numeric, 2) — o cast ::numeric deve envolver TODA a expressao dentro do ROUND, exemplo: ROUND((100.0 * a / b)::numeric, 2) — NUNCA aplique ::numeric apenas no divisor\n"
+    "  1. SEMPRE use ROUND((expressao)::numeric, 2) — o cast ::numeric deve envolver TODA a expressão\n"
     "  2. Para ano e mês use purchase_year e purchase_month da fato_pedidos — nunca JOIN com dim_tempo\n"
     "  3. Para cidade e estado use customer_city e customer_state da fato_pedidos — nunca JOIN com dim_localizacao\n"
     "  4. review_score já está na fato_pedidos — não precisa de JOIN extra\n"
-    "  5. Para receita e ticket médio use item_total\n"
-    "  6. Para taxa de atraso: ROUND(100.0 * SUM(is_late) / COUNT(*)::numeric, 2)\n"
-    "  7. Retorne apenas o SQL, sem nenhum texto antes ou depois\n\n"
-    "  8. Para prazo médio e taxa de atraso POR ESTADO use customer_state da fato_pedidos — nunca agrupe por categoria\n"
-    "  9. Para crescimento percentual entre anos use subquery: ROUND(100.0*(ano_atual - ano_anterior)/ano_anterior::numeric, 2)\n"
-    "  10. Para crescimento percentual de pedidos por ano: use COUNT(DISTINCT order_id) agrupado por purchase_year — os dados de 2016 começam em setembro, então o crescimento 2016-2017 é naturalmente alto e deve ser mencionado na interpretação\n"
-
+    "  5. Para taxa de atraso: ROUND((100.0 * SUM(is_late) / COUNT(*))::numeric, 2)\n"
+    "  6. Para prazo/atraso por ESTADO use customer_state — nunca agrupe por categoria\n"
+    "  7. Para crescimento percentual use subquery: ROUND((100.0*(atual-anterior)/anterior)::numeric, 2)\n"
+    "  8. Retorne apenas o SQL, sem nenhum texto antes ou depois\n\n"
     "EXEMPLOS:\n"
-    "-- Receita por estado:\n"
     "SELECT customer_state, ROUND(SUM(item_total)::numeric,2) AS receita, COUNT(DISTINCT order_id) AS pedidos "
-    "FROM fato_pedidos WHERE order_status='delivered' GROUP BY customer_state ORDER BY receita DESC LIMIT 5;\n\n"
-    "-- Taxa de atraso por categoria:\n"
-    "SELECT p.product_category_name_english, "
-    "ROUND(100.0*SUM(f.is_late)/COUNT(*)::numeric,2) AS taxa_atraso, COUNT(*) AS total "
+    "FROM fato_pedidos WHERE order_status='delivered' GROUP BY customer_state ORDER BY receita DESC LIMIT 5;\n"
+    "SELECT p.product_category_name_english, ROUND((100.0*SUM(f.is_late)/COUNT(*))::numeric,2) AS taxa_atraso "
     "FROM fato_pedidos f JOIN dim_produtos p ON f.product_id=p.product_id "
     "WHERE f.order_status='delivered' AND f.delivery_days IS NOT NULL "
-    "GROUP BY p.product_category_name_english ORDER BY taxa_atraso DESC LIMIT 10;\n\n"
-    "-- Vendedor com nota média:\n"
+    "GROUP BY p.product_category_name_english ORDER BY taxa_atraso DESC LIMIT 10;\n"
     "SELECT f.seller_id, v.seller_city, ROUND(SUM(f.item_total)::numeric,2) AS receita, "
     "ROUND(AVG(f.review_score)::numeric,2) AS nota_media "
     "FROM fato_pedidos f JOIN dim_vendedores v ON f.seller_id=v.seller_id "
@@ -88,11 +68,39 @@ def run_query(sql):
     except Exception as e:
         return None, str(e)
 
+def is_review_question(prompt):
+    """Detecta se a pergunta é sobre opinião/sentimento dos clientes."""
+    keywords = [
+        "reclamam", "reclamação", "reclamações", "falam", "dizem", "comentam",
+        "opinião", "opiniões", "feedback", "avaliação", "avaliações", "review",
+        "reviews", "clientes dizem", "clientes falam", "satisfação", "insatisfação",
+        "elogiam", "criticam", "problema", "problemas", "experiência", "sentimento"
+    ]
+    prompt_lower = prompt.lower()
+    return any(kw in prompt_lower for kw in keywords)
+
+def search_reviews(prompt, top_k=5):
+    """Busca reviews similares no pgvector usando embedding da pergunta."""
+    from fastembed import TextEmbedding
+    model = TextEmbedding("BAAI/bge-small-en-v1.5")
+    embedding = list(model.embed([prompt]))[0].tolist()
+    embedding_str = str(embedding)
+
+    engine = create_engine(DB_CONN)
+    with engine.connect() as conn:
+        result = conn.execute(text(f"""
+            SELECT review_text, review_score
+            FROM reviews_embeddings
+            ORDER BY embedding <-> '{embedding_str}'::vector
+            LIMIT {top_k}
+        """))
+        return result.fetchall()
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-if prompt := st.chat_input("Ex: Ticket médio por pagamento em 2017? Crescimento de pedidos por ano?"):
+if prompt := st.chat_input("Ex: O que os clientes reclamam? Qual cidade de SP tem maior receita?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.write(prompt)
@@ -105,37 +113,59 @@ if prompt := st.chat_input("Ex: Ticket médio por pagamento em 2017? Crescimento
 
                 llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.3-70b-versatile")
 
-                sql_messages = [
-                    SystemMessage(content=SCHEMA),
-                    HumanMessage(content=f"Gere apenas o SQL para responder: {prompt}")
-                ]
-                sql_response = llm.invoke(sql_messages)
-                sql = sql_response.content.strip()
+                if is_review_question(prompt):
+                    # ── RAG: busca semântica nos reviews ──
+                    reviews = search_reviews(prompt, top_k=8)
 
-                if "```" in sql:
-                    sql = sql.split("```")[1]
-                    if sql.lower().startswith("sql"):
-                        sql = sql[3:]
-                sql = sql.strip()
+                    if not reviews:
+                        answer = "Não encontrei reviews relevantes para essa pergunta."
+                    else:
+                        context = "\n".join([
+                            f"[Nota {r[1]}/5] {r[0]}" for r in reviews
+                        ])
+                        rag_messages = [
+                            SystemMessage(content=(
+                                "Você é um analista de experiência do cliente brasileiro. "
+                                "Com base nos reviews reais de clientes abaixo, responda a pergunta de forma clara e objetiva em português. "
+                                "Cite exemplos dos reviews quando relevante. Destaque padrões e insights importantes."
+                            )),
+                            HumanMessage(content=f"Pergunta: {prompt}\n\nReviews relevantes:\n{context}")
+                        ]
+                        response = llm.invoke(rag_messages)
+                        answer = response.content
 
-                cols, rows = run_query(sql)
-
-                if cols is None:
-                    answer = "Desculpe, não consegui processar essa pergunta. Tente reformulá-la de outra forma."
                 else:
-                    result_text = f"Colunas: {cols}\nDados: {[list(r) for r in rows]}"
-                    interpret_messages = [
-                        SystemMessage(content=(
-                            "Você é um analista de dados brasileiro. "
-                            "Interprete o resultado da query e responda de forma clara e objetiva em português. "
-                            "Use os números reais retornados. Seja direto e destaque os insights mais importantes. "
-                            "IMPORTANTE: os dados de 2016 cobrem apenas setembro a outubro de 2018, "
-                            "então comparações envolvendo 2016 devem mencionar que o ano está incompleto."
-                        )),
-                        HumanMessage(content=f"Pergunta: {prompt}\n\nResultado:\n{result_text}")
+                    # ── Text-to-SQL: consulta no DW ──
+                    sql_messages = [
+                        SystemMessage(content=SCHEMA),
+                        HumanMessage(content=f"Gere apenas o SQL para responder: {prompt}")
                     ]
-                    interpret_response = llm.invoke(interpret_messages)
-                    answer = interpret_response.content
+                    sql_response = llm.invoke(sql_messages)
+                    sql = sql_response.content.strip()
+
+                    if "```" in sql:
+                        sql = sql.split("```")[1]
+                        if sql.lower().startswith("sql"):
+                            sql = sql[3:]
+                    sql = sql.strip()
+
+                    cols, rows = run_query(sql)
+
+                    if cols is None:
+                        answer = "Desculpe, não consegui processar essa pergunta. Tente reformulá-la de outra forma."
+                    else:
+                        result_text = f"Colunas: {cols}\nDados: {[list(r) for r in rows]}"
+                        interpret_messages = [
+                            SystemMessage(content=(
+                                "Você é um analista de dados brasileiro. "
+                                "Interprete o resultado da query e responda de forma clara e objetiva em português. "
+                                "Use os números reais retornados. Seja direto e destaque os insights mais importantes. "
+                                "Os dados de 2016 cobrem apenas setembro a dezembro, então comparações com 2016 devem mencionar isso."
+                            )),
+                            HumanMessage(content=f"Pergunta: {prompt}\n\nResultado:\n{result_text}")
+                        ]
+                        interpret_response = llm.invoke(interpret_messages)
+                        answer = interpret_response.content
 
             except Exception as e:
                 answer = f"Erro: {str(e)}"
