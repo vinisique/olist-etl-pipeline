@@ -70,6 +70,43 @@ header[data-testid="stHeader"] { background: transparent; }
     transition: all 0.15s ease;
 }
 .nav-item:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border); }
+
+[data-testid="stSidebar"] [data-testid="stPills"] {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+[data-testid="stSidebar"] [data-testid="stPills"] button {
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 10px !important;
+    color: var(--text-muted) !important;
+    font-family: var(--font-display) !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    text-align: left !important;
+    padding: 10px 14px !important;
+    width: 100% !important;
+    justify-content: flex-start !important;
+    transition: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stPills"] button:hover {
+    background: var(--bg-elevated) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border) !important;
+    transition: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"] {
+    background: var(--accent-glow) !important;
+    color: var(--accent-bright) !important;
+    border-color: rgba(99,102,241,0.25) !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
 .nav-item.active { background: var(--accent-glow); color: var(--accent-bright) !important; border-color: rgba(99,102,241,0.25); }
 
 .page-header {
@@ -282,12 +319,13 @@ with st.sidebar:
         </div>
     </div>""", unsafe_allow_html=True)
 
-    page = st.selectbox("", [p[1] for p in PAGES], label_visibility="collapsed")
-    nav_html = "".join(
-        f'<div class="nav-item {"active" if n==page else ""}"><span>{i}</span>{n}</div>'
-        for i,n in PAGES
+    page = st.pills(
+        "",
+        options=[n for _, n in PAGES],
+        format_func=lambda n: next(i for i, name in PAGES if name == n) + "  " + n,
+        default="Visão Geral",
+        label_visibility="collapsed"
     )
-    st.markdown(nav_html, unsafe_allow_html=True)
     st.markdown("<div class='divider' style='margin:20px 0'></div>", unsafe_allow_html=True)
 
     anos = sorted(receita["ano"].unique().tolist())
