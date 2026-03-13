@@ -10,3 +10,10 @@ ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 USER airflow
+RUN pip install --no-cache-dir \
+    kagglehub \
+    pyspark==3.5.0 \
+    pandas \
+    psycopg2-binary \
+    boto3 \
+    pyarrow

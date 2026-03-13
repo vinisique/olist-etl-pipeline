@@ -20,19 +20,7 @@ x-airflow-common: &airflow-common
     LOCALSTACK_ENDPOINT: http://localstack:4566
     # Bucket do Data Lake
     S3_BUCKET: olist-data-lake
-    _PIP_ADDITIONAL_REQUIREMENTS: >-
-      kagglehub
-      pyspark==3.5.0
-      pandas
-      sqlalchemy
-      psycopg2-binary
-      boto3
-      pyarrow
-      langchain
-      langchain-groq
-      langchain-postgres
-      sentence-transformers
-      pgvector
+    
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
