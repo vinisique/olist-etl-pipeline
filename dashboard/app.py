@@ -105,42 +105,17 @@ section[data-testid="stSidebar"] button:hover {
     color: var(--text-primary) !important;
 }
 
-/* BOTÃO ATIVO */
-section[data-testid="stSidebar"] button[aria-selected="true"] {
-    background: linear-gradient(
-        90deg,
-        rgba(99,102,241,0.30),
-        rgba(34,211,238,0.10)
-    ) !important;
-
-    border-color: rgba(99,102,241,0.6) !important;
-    color: var(--accent-bright) !important;
-    box-shadow: 0 0 14px rgba(99,102,241,0.25) !important;
+/* BOTÃO ATIVO DO ST.PILLS */
+[data-testid="stSidebar"] button[kind="pillsActive"]{
+    background: linear-gradient(90deg,#6366F1,#22D3EE) !important;
+    color: white !important;
+    border-radius: 10px !important;
+    border: 1px solid #6366F1 !important;
+    box-shadow: 0 0 12px rgba(99,102,241,0.35) !important;
 }
-
-/* ativo */
-[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"] {
-    background: linear-gradient(
-        90deg,
-        rgba(99,102,241,0.22),
-        rgba(34,211,238,0.08)
-    ) !important;
-    color: var(--accent-bright) !important;
-    border-color: rgba(99,102,241,0.45) !important;
-    box-shadow: 0 0 12px rgba(99,102,241,0.15) !important;
-    position: relative;
-}
-
-/* barra lateral ativa */
-[data-testid="stSidebar"] [data-testid="stPills"] button[aria-checked="true"]::before {
-    content: "";
-    position: absolute;
-    left: -6px;
-    top: 20%;
-    height: 60%;
-    width: 3px;
-    border-radius: 3px;
-    background: linear-gradient(180deg, #6366F1, #22D3EE);
+/* FORÇA TEXTO DO BOTÃO ATIVO A FICAR BRANCO */
+[data-testid="stSidebar"] button[kind="pillsActive"] *{
+    color: white !important;
 }
 
 .nav-item.active { background: var(--accent-glow); color: var(--accent-bright) !important; border-color: rgba(99,102,241,0.25); }
