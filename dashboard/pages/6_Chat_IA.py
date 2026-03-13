@@ -16,145 +16,112 @@ if not GROQ_API_KEY:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-@st.cache_data
-def get_data_context():
+SCHEMA = """
+Você tem acesso a um Data Warehouse PostgreSQL com o seguinte schema estrela:
+
+TABELA PRINCIPAL:
+fato_pedidos (
+    order_id VARCHAR,
+    customer_id VARCHAR,
+    product_id VARCHAR,
+    seller_id VARCHAR,
+    order_status VARCHAR,         -- 'delivered', 'canceled', etc
+    order_purchase_timestamp TIMESTAMP,
+    order_delivered_customer_date TIMESTAMP,
+    order_estimated_delivery_date TIMESTAMP,
+    purchase_year INTEGER,        -- 2016, 2017, 2018
+    purchase_month INTEGER,       -- 1-12
+    purchase_day INTEGER,
+    purchase_weekday INTEGER,
+    delivery_days INTEGER,        -- dias para entregar
+    is_late INTEGER,              -- 1=atrasado, 0=no prazo
+    item_price NUMERIC,
+    item_freight NUMERIC,
+    item_total NUMERIC,           -- preço + frete
+    payment_type VARCHAR,         -- 'credit_card', 'boleto', etc
+    payment_value NUMERIC,
+    installments INTEGER,
+    review_score INTEGER,         -- 1 a 5
+    customer_state VARCHAR,       -- ex: 'SP', 'RJ'
+    customer_city VARCHAR         -- ex: 'sao paulo'
+)
+
+DIMENSÕES:
+dim_clientes (customer_id, customer_unique_id, customer_zip_code, customer_city, customer_state)
+dim_vendedores (seller_id, seller_zip_code, seller_city, seller_state)
+dim_produtos (product_id, product_category_name, product_category_name_english, product_weight_g, product_length_cm, product_height_cm, product_width_cm)
+dim_localizacao (zip_code_prefix, city, state, lat, lng)  -- NÃO use para filtrar cidade/estado
+dim_tempo (id_tempo, data_completa, ano, mes, dia, dia_semana, trimestre, nome_mes)
+
+REGRAS:
+- Sempre use ROUND(...::numeric, 2) para valores monetários
+- Para filtrar estado SP: WHERE customer_state = 'SP'
+- Para receita total: SUM(item_total)
+- Para pedidos únicos: COUNT(DISTINCT order_id)
+- Período: Setembro/2016 a Outubro/2018
+- Retorne apenas SQL válido para PostgreSQL, sem explicações
+- Para filtrar por cidade: use customer_city direto da fato_pedidos, NÃO faça JOIN com dim_localizacao
+- Para cidades de SP: WHERE customer_state = 'SP' GROUP BY customer_city
+"""
+
+def run_query(sql: str):
     try:
         engine = create_engine(DB_CONN)
         with engine.connect() as conn:
-
-            receita = conn.execute(text("""
-                SELECT ROUND(SUM(item_total)::numeric, 2)
-                FROM fato_pedidos WHERE order_status = 'delivered'
-            """)).fetchone()[0]
-
-            pedidos = conn.execute(text(
-                "SELECT COUNT(DISTINCT order_id) FROM fato_pedidos"
-            )).fetchone()[0]
-
-            nota = conn.execute(text("""
-                SELECT ROUND(AVG(review_score)::numeric, 2)
-                FROM fato_pedidos WHERE review_score IS NOT NULL
-            """)).fetchone()[0]
-
-            receita_estado = conn.execute(text("""
-                SELECT customer_state,
-                       ROUND(SUM(item_total)::numeric, 2) as receita,
-                       COUNT(DISTINCT order_id) as pedidos
-                FROM fato_pedidos
-                WHERE order_status = 'delivered'
-                GROUP BY customer_state
-                ORDER BY receita DESC
-                LIMIT 5
-            """)).fetchall()
-
-            receita_ano = conn.execute(text("""
-                SELECT purchase_year,
-                       COUNT(DISTINCT order_id) as pedidos,
-                       ROUND(SUM(item_total)::numeric, 2) as receita
-                FROM fato_pedidos
-                WHERE order_status = 'delivered'
-                GROUP BY purchase_year
-                ORDER BY purchase_year
-            """)).fetchall()
-
-            top_categorias = conn.execute(text("""
-                SELECT p.product_category_name_english,
-                       ROUND(SUM(f.item_total)::numeric, 2) as receita,
-                       COUNT(DISTINCT f.order_id) as pedidos
-                FROM fato_pedidos f
-                JOIN dim_produtos p ON f.product_id = p.product_id
-                WHERE p.product_category_name_english != 'unknown'
-                  AND f.order_status = 'delivered'
-                GROUP BY p.product_category_name_english
-                ORDER BY receita DESC
-                LIMIT 5
-            """)).fetchall()
-
-            entrega = conn.execute(text("""
-                SELECT ROUND(AVG(delivery_days)::numeric, 1) as prazo_medio,
-                       ROUND(100.0 * SUM(is_late) / COUNT(*), 1) as pct_atraso
-                FROM fato_pedidos
-                WHERE order_status = 'delivered'
-                  AND delivery_days IS NOT NULL
-            """)).fetchone()
-
-            pagamento = conn.execute(text("""
-                SELECT payment_type,
-                       COUNT(*) as qtd,
-                       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 1) as pct
-                FROM fato_pedidos
-                WHERE payment_type IS NOT NULL
-                GROUP BY payment_type
-                ORDER BY qtd DESC
-            """)).fetchall()
-
-        return {
-            "receita_total": f"R$ {receita:,.2f}" if receita else "N/A",
-            "total_pedidos": f"{pedidos:,}" if pedidos else "N/A",
-            "nota_media": str(nota) if nota else "N/A",
-            "prazo_medio_entrega": f"{entrega[0]} dias" if entrega else "N/A",
-            "taxa_atraso": f"{entrega[1]}%" if entrega else "N/A",
-            "receita_por_estado": [{"estado": r[0], "receita": f"R$ {r[1]:,.2f}", "pedidos": r[2]} for r in receita_estado],
-            "receita_por_ano": [{"ano": r[0], "pedidos": r[1], "receita": f"R$ {r[2]:,.2f}"} for r in receita_ano],
-            "top_categorias": [{"categoria": r[0], "receita": f"R$ {r[1]:,.2f}", "pedidos": r[2]} for r in top_categorias],
-            "formas_pagamento": [{"tipo": r[0], "percentual": f"{r[2]}%"} for r in pagamento],
-        }
+            result = conn.execute(text(sql))
+            rows = result.fetchall()
+            cols = result.keys()
+            return list(cols), rows
     except Exception as e:
-        return {"erro": str(e)}
-
-context = get_data_context()
-
-SYSTEM_PROMPT = f"""Você é um analista de dados especialista no dataset de e-commerce brasileiro da Olist.
-Responda perguntas sobre os dados de forma clara e objetiva em português.
-Use os dados abaixo para responder com precisão. Seja direto e use números reais.
-
-DADOS DO DATASET (Setembro/2016 a Outubro/2018):
-
-Métricas gerais:
-- Receita total: {context.get('receita_total')}
-- Total de pedidos: {context.get('total_pedidos')}
-- Nota média dos clientes: {context.get('nota_media')}
-- Prazo médio de entrega: {context.get('prazo_medio_entrega')}
-- Taxa de atraso: {context.get('taxa_atraso')}
-
-Top 5 estados por receita:
-{context.get('receita_por_estado')}
-
-Receita por ano:
-{context.get('receita_por_ano')}
-
-Top 5 categorias por receita:
-{context.get('top_categorias')}
-
-Formas de pagamento:
-{context.get('formas_pagamento')}
-
-Responda sempre com base nesses dados reais. Se não souber algo, diga que não há dados disponíveis."""
+        return None, str(e)
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-if prompt := st.chat_input("Ex: Qual o estado com maior receita? Como foi 2017?"):
+if prompt := st.chat_input("Ex: 3 cidades de SP com maior receita? Qual vendedor tem melhor avaliação?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.write(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analisando..."):
+        with st.spinner("Gerando query..."):
             try:
                 from langchain_groq import ChatGroq
                 from langchain_core.messages import HumanMessage, SystemMessage
 
                 llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant")
-                messages = [SystemMessage(content=SYSTEM_PROMPT)]
-                for m in st.session_state.messages[:-1]:
-                    if m["role"] == "user":
-                        messages.append(HumanMessage(content=m["content"]))
-                messages.append(HumanMessage(content=prompt))
 
-                response = llm.invoke(messages)
-                answer = response.content
+                # Etapa 1: gerar SQL
+                sql_messages = [
+                    SystemMessage(content=SCHEMA),
+                    HumanMessage(content=f"Gere apenas o SQL para responder: {prompt}")
+                ]
+                sql_response = llm.invoke(sql_messages)
+                sql = sql_response.content.strip()
+
+                # Limpa marcadores de código se o LLM incluir
+                if "```" in sql:
+                    sql = sql.split("```")[1]
+                    if sql.startswith("sql"):
+                        sql = sql[3:]
+                sql = sql.strip()
+
+                # Etapa 2: executar SQL
+                cols, rows = run_query(sql)
+
+                if cols is None:
+                    answer = f"Erro ao executar a query: {rows}\n\nSQL gerado:\n```sql\n{sql}\n```"
+                else:
+                    # Etapa 3: interpretar resultado
+                    result_text = f"Colunas: {list(cols)}\nDados: {[list(r) for r in rows]}"
+                    interpret_messages = [
+                        SystemMessage(content="Você é um analista de dados. Interprete o resultado da query SQL e responda a pergunta do usuário de forma clara em português. Use os números reais retornados."),
+                        HumanMessage(content=f"Pergunta: {prompt}\n\nResultado da query:\n{result_text}")
+                    ]
+                    interpret_response = llm.invoke(interpret_messages)
+                    answer = interpret_response.content
+
             except Exception as e:
                 answer = f"Erro: {str(e)}"
 
