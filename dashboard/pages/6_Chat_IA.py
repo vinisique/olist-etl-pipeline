@@ -6,8 +6,8 @@ st.set_page_config(page_title="Chat IA — Olist", page_icon="🤖")
 st.title("🤖 Chat com os Dados da Olist")
 st.caption("Faça perguntas sobre métricas do e-commerce ou sobre o que os clientes falam nos reviews")
 
-DB_CONN = os.environ.get("OLIST_DW_CONN", "postgresql+psycopg2://olist:olist2024@postgres-dw:5432/olist_dw")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+DB_CONN = st.secrets.get("OLIST_DW_CONN", os.environ.get("OLIST_DW_CONN", ""))
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
 
 if not GROQ_API_KEY:
     st.error("GROQ_API_KEY não configurada.")
