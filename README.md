@@ -1,6 +1,7 @@
 # Pipeline ETL End-to-End — Olist E-commerce
 
 Pipeline de dados completo construído sobre o dataset público de e-commerce brasileiro da Olist, cobrindo todas as etapas de engenharia de dados: ingestão, processamento distribuído, modelagem dimensional, análise semântica com NLP e visualização analítica com IA generativa.
+ACESSE O STREAMLIT: https://olist-etl-pipeline-fluee76u4cfellwfvtbxph.streamlit.app/
 
 ---
 
